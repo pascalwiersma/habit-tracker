@@ -1,98 +1,382 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import {
+  client,
+  DATABASE_ID,
+  databases,
+  HABITS_COMPLETIONS_TABLE_ID,
+  HABITS_TABLE_ID,
+  RealtimeResponse,
+} from "@/lib/appwrite";
+import { useAuthHook } from "@/lib/auth-context";
+import { Habit, HabitCompletion } from "@/types/database.type";
+import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { useEffect, useRef, useState } from "react";
+import { ScrollView, StyleSheet, View } from "react-native";
+import { ID, Query } from "react-native-appwrite";
+import { Swipeable } from "react-native-gesture-handler";
+import { Button, Surface, Text } from "react-native-paper";
 
-import { HelloWave } from '@/components/hello-wave';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { Link } from 'expo-router';
+export default function Index() {
+  const { signOut, user } = useAuthHook();
 
-export default function HomeScreen() {
-  return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
+  const [habits, setHabits] = useState<Habit[]>();
+  const [completedHabits, setCompletedHabits] = useState<string[]>();
+
+  const swipeableRefs = useRef<{ [key: string]: Swipeable | null }>({});
+
+  useEffect(() => {
+    if (user) {
+      const habitsChannel = `databases.${DATABASE_ID}.collections.${HABITS_TABLE_ID}.documents`;
+
+      const habitsSubscription = client.subscribe(
+        habitsChannel,
+        (response: RealtimeResponse) => {
+          if (
+            response.events.includes(
+              "databases.*.collections.*.documents.*.create"
+            )
+          ) {
+            fetchHabits();
+          } else if (
+            response.events.includes(
+              "databases.*.collections.*.documents.*.update"
+            )
+          ) {
+            fetchHabits();
+          } else if (
+            response.events.includes(
+              "databases.*.collections.*.documents.*.delete"
+            )
+          ) {
+            fetchHabits();
+          }
+        }
+      );
+
+      const completionsChannel = `databases.${DATABASE_ID}.collections.${HABITS_COMPLETIONS_TABLE_ID}.documents`;
+
+      const completionsSubscription = client.subscribe(
+        completionsChannel,
+        (response: RealtimeResponse) => {
+          if (
+            response.events.includes(
+              "databases.*.collections.*.documents.*.create"
+            )
+          ) {
+            fetchTodayCompletions();
+            completionsSubscription();
+          }
+        }
+      );
+
+      fetchHabits();
+      fetchTodayCompletions();
+
+      return () => {
+        habitsSubscription();
+      };
+    }
+  }, [user]);
+
+  const fetchHabits = async () => {
+    try {
+      if (!user?.$id) {
+        setHabits([]);
+        return;
+      }
+
+      const response = await databases.listDocuments(
+        DATABASE_ID,
+        HABITS_TABLE_ID,
+        [Query.equal("user_id", [user.$id])]
+      );
+
+      const docs = response.documents as unknown as Habit[];
+      setHabits(docs);
+    } catch (error) {
+      console.error("Error fetching habits:", error);
+    }
+  };
+
+  const fetchTodayCompletions = async () => {
+    try {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const response = await databases.listDocuments(
+        DATABASE_ID,
+        HABITS_COMPLETIONS_TABLE_ID,
+        [
+          Query.equal("user_id", [user?.$id]),
+          Query.greaterThanEqual("completed_at", today.toISOString()),
+        ]
+      );
+
+      const completions = response.documents as unknown as HabitCompletion[];
+      setCompletedHabits(completions.map((c) => c.habit_id));
+    } catch (error) {
+      console.error("Error fetching habits:", error);
+    }
+  };
+
+  const handleDeleteHabit = async (habitId: string) => {
+    try {
+      await databases.deleteDocument(DATABASE_ID, HABITS_TABLE_ID, habitId);
+    } catch (error) {
+      console.error("Error deleting habit:", error);
+    }
+  };
+
+  const handleCompleteHabit = async (habitId: string) => {
+    if (!user || completedHabits?.includes(habitId)) return;
+
+    try {
+      const currentDate = new Date().toISOString();
+      await databases.createDocument(
+        DATABASE_ID,
+        HABITS_COMPLETIONS_TABLE_ID,
+        ID.unique(),
+        {
+          habit_id: habitId,
+          user_id: user.$id,
+          completed_at: currentDate,
+        }
+      );
+
+      const habit = habits?.find((h) => h.$id === habitId);
+
+      if (habit) {
+        await databases.updateDocument(DATABASE_ID, HABITS_TABLE_ID, habitId, {
+          streak_count: habit.streak_count + 1,
+          last_completed: currentDate,
+        });
+      }
+    } catch (error) {
+      console.error("Error completing habit:", error);
+    }
+  };
+
+  const isHabitCompleted = (habitId: string) =>
+    completedHabits?.includes(habitId);
+
+  const renderRightActionContent = (habitId: string) => (
+    <View style={styles.swipeActionRight}>
+      {isHabitCompleted(habitId) ? (
+        <Text style={styles.completedText}>Voltooid</Text>
+      ) : (
+        <MaterialCommunityIcons
+          name="check-circle-outline"
+          size={32}
+          color={"#fff"}
         />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12',
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <Link href="/modal">
-          <Link.Trigger>
-            <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-          </Link.Trigger>
-          <Link.Preview />
-          <Link.Menu>
-            <Link.MenuAction title="Action" icon="cube" onPress={() => alert('Action pressed')} />
-            <Link.MenuAction
-              title="Share"
-              icon="square.and.arrow.up"
-              onPress={() => alert('Share pressed')}
-            />
-            <Link.Menu title="More" icon="ellipsis">
-              <Link.MenuAction
-                title="Delete"
-                icon="trash"
-                destructive
-                onPress={() => alert('Delete pressed')}
-              />
-            </Link.Menu>
-          </Link.Menu>
-        </Link>
+      )}
+    </View>
+  );
 
-        <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          {`When you're ready, run `}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+  const renderLeftActionContent = () => (
+    <View style={styles.swipeActionLeft}>
+      <MaterialCommunityIcons
+        name="trash-can-outline"
+        size={32}
+        color={"#fff"}
+      />
+    </View>
+  );
+
+  return (
+    <View style={styles.container}>
+      <View style={styles.header}>
+        <Text variant="headlineSmall">Alle gewoontes</Text>
+        <Button mode="text" onPress={signOut} icon={"logout"}>
+          Uitloggen
+        </Button>
+      </View>
+
+      <ScrollView showsVerticalScrollIndicator={false}>
+        {habits?.length === 0 ? (
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyStateText}>
+              Er zijn nog geen gewoontes, begin met er een aanmaken!
+            </Text>
+          </View>
+        ) : (
+          habits?.map((habit, key) => (
+            <Swipeable
+              ref={(ref) => {
+                swipeableRefs.current[habit.$id] = ref;
+              }}
+              key={key}
+              overshootLeft={false}
+              overshootRight={false}
+              renderRightActions={(
+                progressAnimatedValue,
+                dragAnimatedValue,
+                swipeable
+              ) => renderRightActionContent(habit.$id)}
+              renderLeftActions={(
+                progressAnimatedValue,
+                dragAnimatedValue,
+                swipeable
+              ) => renderLeftActionContent()}
+              onSwipeableOpen={(direction) => {
+                if (direction === "left") {
+                  handleDeleteHabit(habit.$id);
+                } else if (direction === "right") {
+                  handleCompleteHabit(habit.$id);
+                }
+
+                swipeableRefs.current[habit.$id]?.close();
+              }}
+            >
+              <Surface
+                style={[
+                  styles.card,
+                  isHabitCompleted(habit.$id) && styles.cardCompleted,
+                ]}
+                elevation={0}
+              >
+                <View style={styles.cardContent}>
+                  <Text style={styles.cardTitle}>{habit.title}</Text>
+                  <Text style={styles.cardDescription}>
+                    {habit.description}
+                  </Text>
+                  <View style={styles.cardFooter}>
+                    <View style={styles.streakBadge}>
+                      <MaterialCommunityIcons
+                        name="fire"
+                        size={18}
+                        color={"#ff9800"}
+                      />
+                      <Text style={styles.streakText}>
+                        {habit.streak_count} dagen
+                      </Text>
+                    </View>
+                    <View style={styles.frequencyBadge}>
+                      <Text style={styles.frequencyText}>
+                        {habit.frequency.charAt(0).toUpperCase() +
+                          habit.frequency.slice(1)}
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+              </Surface>
+            </Swipeable>
+          ))
+        )}
+      </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  titleContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+  container: {
+    flex: 1,
+    padding: 16,
+    backgroundColor: "#f5f5f5",
   },
-  stepContainer: {
-    gap: 8,
-    marginBottom: 8,
+  header: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 24,
   },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
+  title: {
+    fontWeight: "bold",
+  },
+  card: {
+    marginBottom: 18,
+    borderRadius: 18,
+    backgroundColor: "#f7f2fa",
+    shadowColor: "#000",
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  emptyState: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  emptyStateText: {
+    textAlign: "center",
+    color: "#666666",
+    fontSize: 16,
+  },
+  cardContent: {
+    padding: 20,
+  },
+  cardTitle: {
+    fontSize: 20,
+    fontWeight: "bold",
+    marginBottom: 4,
+    color: "#22223B",
+  },
+  cardDescription: {
+    fontSize: 16,
+    marginBottom: 16,
+    color: "#6C6C80",
+  },
+  cardFooter: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  cardCompleted: {
+    opacity: 0.6,
+  },
+  completedText: {
+    color: "#fff",
+    fontSize: 18,
+    fontWeight: "bold",
+  },
+  streakBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#fff3e0",
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  streakText: {
+    marginLeft: 6,
+    color: "#ff9800",
+    fontWeight: "bold",
+    fontSize: 14,
+  },
+  frequencyBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#ede7f6",
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+  },
+  frequencyText: {
+    color: "#7c4dff",
+    fontWeight: "bold",
+    fontSize: 14,
+  },
+  swipeActionRight: {
+    backgroundColor: "#4caf50",
+    justifyContent: "center",
+    alignItems: "flex-end",
+    flex: 1,
+    borderRadius: 18,
+    marginBottom: 18,
+    marginTop: 2,
+    paddingRight: 16,
+  },
+  swipeActionLeft: {
+    backgroundColor: "#e53935",
+    justifyContent: "center",
+    alignItems: "flex-start",
+    flex: 1,
+    borderRadius: 18,
+    marginBottom: 18,
+    marginTop: 2,
+    paddingLeft: 16,
   },
 });
